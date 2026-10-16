@@ -1,6 +1,5 @@
 import math
 import time
-from collections import deque
 from pathlib import Path
 
 import cv2
@@ -8,60 +7,13 @@ import mediapipe as mp
 import servo_controller as mao
 
 
-# Pinos: polegar, indicador, medio, anelar e minimo.
-pinos = [9, 10, 11, 12, 13]
-nomes = ["Polegar", "Indicador", "Medio", "Anelar", "Minimo"]
-
-# Guarda o ultimo estado enviado para cada servo.
-# No servo_controller: 1 = aberto em 0 graus; 0 = fechado.
-ultimo_estado = {pino: 1 for pino in pinos}
-
-# Guarda cinco leituras de cada dedo. A maioria vence e reduz tremores.
-historico = {pino: deque([1] * 5, maxlen=5) for pino in pinos}
+# Abre a camera.
+cap = cv2.VideoCapture(0)
+cap.set(3, 640)
+cap.set(4, 480)
 
 
-def calcular_angulo(a, b, c):
-    """Calcula o angulo A-B-C. Dedo esticado fica perto de 180 graus."""
-    ba = (a.x - b.x, a.y - b.y)
-    bc = (c.x - b.x, c.y - b.y)
-
-    divisor = math.hypot(*ba) * math.hypot(*bc)
-    if divisor == 0:
-        return 0
-
-    cos = (ba[0] * bc[0] + ba[1] * bc[1]) / divisor
-    return math.degrees(math.acos(max(-1, min(1, cos))))
-
-
-def enviar_estado(pino, leitura):
-    """Filtra a leitura e envia somente quando o estado realmente muda."""
-    historico[pino].append(leitura)
-    estado = 1 if sum(historico[pino]) >= 3 else 0
-
-    if estado != ultimo_estado[pino]:
-        mao.abrir_fechar(pino, estado)
-        ultimo_estado[pino] = estado
-
-
-def abrir_todos():
-    """Retorna todos os servos para 0 graus."""
-    for pino in pinos:
-        mao.abrir_fechar(pino, 1)
-        ultimo_estado[pino] = 1
-        historico[pino] = deque([1] * 5, maxlen=5)
-
-
-# Abre a camera. No Windows, CAP_DSHOW pode ser acrescentado se necessario:
-# camera = cv2.VideoCapture(0, cv2.CAP_DSHOW)
-camera = cv2.VideoCapture(0)
-camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-
-if not camera.isOpened():
-    raise RuntimeError("Nao foi possivel abrir a camera.")
-
-
-# O modelo hand_landmarker.task deve ficar na mesma pasta deste arquivo.
+# Configura o MediaPipe atual.
 modelo = Path(__file__).parent / "hand_landmarker.task"
 
 opcoes = mp.tasks.vision.HandLandmarkerOptions(
@@ -71,124 +23,159 @@ opcoes = mp.tasks.vision.HandLandmarkerOptions(
 )
 
 
-# Linhas usadas para desenhar a mao.
-conexoes = [
-    (0, 1), (1, 2), (2, 3), (3, 4),
-    (0, 5), (5, 6), (6, 7), (7, 8),
-    (5, 9), (9, 10), (10, 11), (11, 12),
-    (9, 13), (13, 14), (14, 15), (15, 16),
-    (13, 17), (17, 18), (18, 19), (19, 20),
-    (0, 17),
-]
+# Relacao entre os dedos e os pinos do Arduino.
+nomes = {
+    9: "Polegar",
+    10: "Indicador",
+    11: "Medio",
+    12: "Anelar",
+    13: "Minimo",
+}
+
+
+# Estado 1 = dedo aberto e servo em 0 graus.
+# Estado 0 = dedo fechado.
+estados = {
+    9: 1,
+    10: 1,
+    11: 1,
+    12: 1,
+    13: 1,
+}
 
 
 frames_sem_mao = 0
-mao_ja_aberta = False
+inicio = time.monotonic()
+ultimo_timestamp = -1
+
 
 try:
-    abrir_todos()
+    # Garante que o programa comece com todos os dedos abertos.
+    for pino in estados:
+        mao.abrir_fechar(pino, 1)
 
-    with mp.tasks.vision.HandLandmarker.create_from_options(opcoes) as detector:
-        inicio = time.monotonic()
-        ultimo_timestamp = -1
+    with mp.tasks.vision.HandLandmarker.create_from_options(opcoes) as hands:
 
         while True:
-            success, img = camera.read()
+            success, img = cap.read()
 
             if not success:
-                frames_sem_mao += 1
-                if frames_sem_mao >= 8 and not mao_ja_aberta:
-                    abrir_todos()
-                    mao_ja_aberta = True
                 continue
 
-            # Converte a imagem para o formato usado pelo MediaPipe.
+            # Converte a imagem para RGB.
             frame_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
             imagem_mp = mp.Image(
                 image_format=mp.ImageFormat.SRGB,
                 data=frame_rgb,
             )
 
-            # O modo VIDEO exige um timestamp sempre crescente.
+            # O MediaPipe precisa saber o tempo de cada imagem.
             timestamp = int((time.monotonic() - inicio) * 1000)
             timestamp = max(timestamp, ultimo_timestamp + 1)
             ultimo_timestamp = timestamp
-
-            resultado = detector.detect_for_video(imagem_mp, timestamp)
+            resultado = hands.detect_for_video(imagem_mp, timestamp)
 
             if resultado.hand_landmarks:
                 frames_sem_mao = 0
-                mao_ja_aberta = False
                 pontos = resultado.hand_landmarks[0]
 
-                # Angulos dos quatro dedos comuns.
-                angulo_indicador = calcular_angulo(
-                    pontos[5], pontos[6], pontos[8])
-                angulo_medio = calcular_angulo(
-                    pontos[9], pontos[10], pontos[12])
-                angulo_anelar = calcular_angulo(
-                    pontos[13], pontos[14], pontos[16])
-                angulo_minimo = calcular_angulo(
-                    pontos[17], pontos[18], pontos[20])
+                # -------------------------------------------------
+                # POLEGAR
+                # -------------------------------------------------
 
-                # O polegar usa angulo e distancia proporcional ao tamanho da palma.
-                angulo_polegar = calcular_angulo(
-                    pontos[2], pontos[3], pontos[4])
+                # Compara a distancia do polegar com a largura da palma.
+                # Assim, aproximar a mao da camera nao altera o resultado.
+                distancia_polegar = math.hypot(
+                    pontos[4].x - pontos[17].x,
+                    pontos[4].y - pontos[17].y,
+                )
                 largura_palma = math.hypot(
                     pontos[5].x - pontos[17].x,
                     pontos[5].y - pontos[17].y,
                 )
-                distancia_polegar = math.hypot(
-                    pontos[4].x - pontos[5].x,
-                    pontos[4].y - pontos[5].y,
-                ) / max(largura_palma, 0.000001)
+                proporcao_polegar = distancia_polegar / \
+                    max(largura_palma, 0.001)
 
-                # 1 significa aberto; 0 significa fechado.
-                polegar = 1 if angulo_polegar > 140 and distancia_polegar > 0.65 else 0
-                indicador = 1 if angulo_indicador > 145 else 0
-                medio = 1 if angulo_medio > 145 else 0
-                anelar = 1 if angulo_anelar > 145 else 0
-                minimo = 1 if angulo_minimo > 145 else 0
+                # Dois limites criam uma pequena zona neutra.
+                # Dentro dessa zona, o estado anterior e mantido.
+                if proporcao_polegar > 1.20:
+                    novos_estados_polegar = 1
+                elif proporcao_polegar < 0.90:
+                    novos_estados_polegar = 0
+                else:
+                    novos_estados_polegar = estados[9]
 
-                enviar_estado(9, polegar)
-                enviar_estado(10, indicador)
-                enviar_estado(11, medio)
-                enviar_estado(12, anelar)
-                enviar_estado(13, minimo)
+                # -------------------------------------------------
+                # OUTROS QUATRO DEDOS
+                # -------------------------------------------------
 
-                # Converte os pontos para pixels e desenha a mao.
+                # A coordenada Y aumenta de cima para baixo.
+                # Se a ponta estiver acima da base, o dedo esta aberto.
+                dist_indicador = pontos[5].y - pontos[8].y
+                dist_medio = pontos[9].y - pontos[12].y
+                dist_anelar = pontos[13].y - pontos[16].y
+                dist_minimo = pontos[17].y - pontos[20].y
+
+                # Comeca mantendo os estados anteriores.
+                novos_estados = estados.copy()
+                novos_estados[9] = novos_estados_polegar
+
+                # A zona entre -0.02 e 0.02 evita tremores.
+                if dist_indicador > 0.02:
+                    novos_estados[10] = 1
+                elif dist_indicador < -0.02:
+                    novos_estados[10] = 0
+
+                if dist_medio > 0.02:
+                    novos_estados[11] = 1
+                elif dist_medio < -0.02:
+                    novos_estados[11] = 0
+
+                if dist_anelar > 0.02:
+                    novos_estados[12] = 1
+                elif dist_anelar < -0.02:
+                    novos_estados[12] = 0
+
+                if dist_minimo > 0.02:
+                    novos_estados[13] = 1
+                elif dist_minimo < -0.02:
+                    novos_estados[13] = 0
+
+                # Envia um comando somente quando o estado muda.
+                for pino in estados:
+                    if novos_estados[pino] != estados[pino]:
+                        mao.abrir_fechar(pino, novos_estados[pino])
+                        estados[pino] = novos_estados[pino]
+
+                # Desenha os 21 pontos encontrados pelo MediaPipe.
                 altura, largura, _ = img.shape
-                pontos_tela = [
-                    (int(p.x * largura), int(p.y * altura))
-                    for p in pontos
-                ]
 
-                for x, y in pontos_tela:
+                for ponto in pontos:
+                    x = int(ponto.x * largura)
+                    y = int(ponto.y * altura)
                     cv2.circle(img, (x, y), 4, (255, 0, 0), -1)
 
-                for inicio_linha, fim_linha in conexoes:
-                    cv2.line(
-                        img,
-                        pontos_tela[inicio_linha],
-                        pontos_tela[fim_linha],
-                        (0, 255, 0),
-                        2,
-                    )
+                # Mostra o estado de cada dedo na tela.
+                linha = 25
 
-                # Legendas mantidas na tela.
-                for linha, (pino, nome) in enumerate(zip(pinos, nomes), start=1):
-                    estado = "aberto" if ultimo_estado[pino] == 1 else "fechado"
+                for pino in estados:
+                    texto = "aberto" if estados[pino] == 1 else "fechado"
+
                     cv2.putText(
                         img,
-                        f"{nome}: {estado}",
-                        (10, linha * 23),
+                        f"{nomes[pino]}: {texto}",
+                        (10, linha),
                         cv2.FONT_HERSHEY_SIMPLEX,
                         0.55,
                         (0, 255, 0),
                         2,
                     )
 
+                    linha += 23
+
             else:
+                # Conta quantas imagens consecutivas ficaram sem uma mao.
                 frames_sem_mao += 1
 
                 cv2.putText(
@@ -201,24 +188,24 @@ try:
                     2,
                 )
 
-                # Abre a mao apenas uma vez depois de oito frames sem deteccao.
-                if frames_sem_mao >= 8 and not mao_ja_aberta:
-                    abrir_todos()
-                    mao_ja_aberta = True
+                # Depois de oito imagens sem mao, abre todos os dedos.
+                if frames_sem_mao == 8:
+                    for pino in estados:
+                        mao.abrir_fechar(pino, 1)
+                        estados[pino] = 1
 
             cv2.imshow("Mao robotica", img)
 
-            # Pressione Q ou Esc para sair.
-            tecla = cv2.waitKey(1) & 0xFF
-            if tecla == ord("q") or tecla == 27:
+            # Pressione Q para encerrar.
+            if cv2.waitKey(1) & 0xFF == ord("q"):
                 break
 
+
 finally:
-    # Sempre retorna os servos para 0 graus antes de encerrar.
-    try:
-        abrir_todos()
-        time.sleep(0.3)
-    finally:
-        camera.release()
-        cv2.destroyAllWindows()
-        mao.board.exit()
+    # Abre todos os dedos antes de fechar o programa.
+    for pino in estados:
+        mao.abrir_fechar(pino, 1)
+
+    cap.release()
+    cv2.destroyAllWindows()
+    mao.board.exit()
