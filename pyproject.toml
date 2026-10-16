@@ -1,0 +1,11 @@
+[project]
+name = "senac-pir-mao-robotica"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "mediapipe>=1.1.1",
+    "protobuf>=7.36.2",
+    "pyfirmata2>=2.5.1",
+]
