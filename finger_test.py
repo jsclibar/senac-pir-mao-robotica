@@ -1,14 +1,16 @@
+# Importa as ferramentas para comunicação e controle dos servomotores no Arduino.
 from pyfirmata2 import Arduino, SERVO
+
+# Importa a biblioteca para controlar pausas na execução do programa.
 import time
 
-# Dicionário que define os pinos digitais do Arduino e os ângulos
-# de movimentação de cada servomotor.
-#
-# As chaves representam os números dos pinos digitais do Arduino.
-# Os valores representam os ângulos, em graus, utilizados para fechar os dedos.
-#
-# Exemplo: 9: 120 significa que o servomotor conectado ao pino 9
-# será movimentado até a posição de 120 graus.
+# Porta de comunicação com o Arduino (macOS)
+# Para Windows, utilize algo como 'COM3', 'COM4', etc.
+comunication_port = '/dev/cu.usbserial-A5069RR4'
+
+# Dicionário que associa os pinos digitais do Arduino aos ângulos dos servomotores.
+# As chaves representam os pinos e os valores representam os ângulos em graus.
+# Exemplo: 9: 120 movimenta o servo conectado ao pino 9 até 120 graus.
 servos = {
     9: 120,   # Dedo 1
     10: 120,  # Dedo 2
@@ -18,93 +20,53 @@ servos = {
 }
 
 # Solicita ao usuário a quantidade de testes que deseja realizar.
-number_tests = int(
-    input("Input how many times you want to test the fingers: "))
+number_tests = int(input("Input how many times you want to test the fingers: "))
 
-# Estabelece a comunicação serial entre o Python e o Arduino.
-# O PyFirmata2 utiliza o protocolo Firmata para enviar comandos à placa.
-#
-# O endereço informado corresponde à porta serial do Arduino no macOS.
-# No Windows, normalmente seria necessário utilizar COM3, COM4 etc.
-#
-# A variável board representa a conexão estabelecida com o Arduino.
-board = Arduino('/dev/cu.usbserial-A5069RR4')
+# Estabelece a comunicação serial com o Arduino utilizando o protocolo Firmata.
+# A variável board representa a conexão com a placa.
+board = Arduino(comunication_port)
 
 
-# Define uma função para movimentar um servomotor.
-#
-# Parâmetros:
-# pin: número do pino digital ao qual o servomotor está conectado.
-# angle: posição, em graus, para a qual o servomotor deve se movimentar.
-#
-# O método write() envia ao Arduino o comando de posicionamento.
-# O servomotor começa a se movimentar em direção ao ângulo solicitado.
-# A função não aguarda o motor terminar fisicamente o movimento.
+# Função que movimenta um servomotor até o ângulo desejado.
+# pin: pino digital do Arduino.
+# angle: ângulo de movimentação, em graus.
+# O método write() envia o comando ao Arduino.
 def servo_activate(pin, angle):
     board.digital[pin].write(angle)
 
 
-# O bloco try executa a configuração e os movimentos dos servomotores.
-# Mesmo que ocorra um erro durante essas operações, o bloco finally
-# será executado para encerrar a comunicação com o Arduino.
+# O bloco try executa a configuração e movimentação dos servomotores.
+# O finally garante o encerramento da comunicação com o Arduino, mesmo em caso de erro.
 try:
 
-    # Percorre as chaves do dicionário servos, ou seja, os pinos:
-    # 9, 10, 11, 12 e 13.
-    #
-    # Para cada pino, configura seu modo de funcionamento como SERVO.
-    # Isso informa ao Arduino que o pino será utilizado para
-    # controlar um servomotor.
+    # Percorre os pinos definidos no dicionário servos (9, 10, 11, 12 e 13).
+    # Configura cada pino no modo SERVO para controlar um servomotor.
     for pin in servos:
         board.digital[pin].mode = SERVO
 
-    # Coloca todos os servomotores na posição inicial de 0 graus.
-    #
-    # O comando é enviado individualmente para cada pino.
-    # Os motores não precisam terminar seus movimentos antes
-    # de o próximo comando ser enviado.
-    #
-    # No projeto da mão robótica, 0 grau corresponde à posição
-    # inicial dos dedos.
+    # Posiciona todos os servomotores em 0 grau, individualmente.
+    # Na mão robótica, essa é a posição inicial dos dedos.
     for pin in servos:
         servo_activate(pin, 0)
 
-    # Pausa a execução do Python por 1 segundo.
-    # Essa pausa permite que os servomotores tenham tempo
-    # para alcançar suas posições iniciais antes dos testes.
+    # Pausa a execução por 1 segundo para que os servomotores
+    # alcancem suas posições iniciais antes dos testes.
     time.sleep(1)
 
-    # Repete a sequência completa de testes conforme a
-    # quantidade informada pelo usuário.
-    #
-    # A função range(number_tests) determina quantas vezes
-    # o bloco de comandos será executado.
-    #
-    # A variável test começa em 0, por isso utilizamos test + 1
-    # para mostrar a numeração começando em 1 no terminal.
+    # Repete os testes conforme a quantidade informada pelo usuário.
+    # range(number_tests) controla o número de repetições.
+    # test + 1 exibe a numeração dos testes começando em 1.
     for test in range(number_tests):
-
         print(f"Starting test {test + 1} of {number_tests}")
 
-        # Percorre o dicionário servos utilizando o método items().
-        #
-        # Em cada repetição:
-        # pin recebe o número do pino digital.
-        # angle recebe o ângulo configurado para aquele servomotor.
-        #
-        # Exemplo da primeira repetição:
-        # pin = 9
-        # angle = 120
-        #
-        # Cada servomotor é testado individualmente.
+        # Percorre o dicionário servos com items(), obtendo o pino e o ângulo.
+        # Exemplo: pin = 9 e angle = 120.
         for pin, angle in servos.items():
 
             # Envia o comando para movimentar o servomotor
-            # até o ângulo definido no dicionário.
             servo_activate(pin, angle)
 
             # Aguarda 1 segundo antes de enviar o próximo comando.
-            # Esse intervalo permite que o motor execute o movimento.
             time.sleep(1)
 
             # Envia o comando para retornar o servomotor
@@ -115,10 +77,5 @@ try:
             # o teste do próximo servomotor.
             time.sleep(1)
 
-# O bloco finally é executado ao terminar os testes ou
-# quando ocorre uma exceção dentro do bloco try.
-#
-# O método board.exit() encerra a comunicação serial
-# entre o Python e o Arduino, liberando a porta utilizada.
 finally:
     board.exit()
